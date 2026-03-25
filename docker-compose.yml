@@ -1,0 +1,38 @@
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+  neo4j:
+    image: neo4j:5
+    ports:
+      - "7474:7474"   # Neo4j Browser UI
+      - "7687:7687"   # Bolt protocol
+    environment:
+      NEO4J_AUTH: neo4j/password
+      NEO4J_PLUGINS: '["apoc"]'
+    volumes:
+      - neo4j_data:/data
+
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    # Pull models on first start
+    entrypoint: >
+      sh -c "ollama serve &
+             sleep 5 &&
+             ollama pull llama3.1:8b &&
+             ollama pull nomic-embed-text &&
+             wait"
+
+volumes:
+  qdrant_data:
+  neo4j_data:
+  ollama_data:
