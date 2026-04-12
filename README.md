@@ -8,6 +8,7 @@ Memory pipeline using mem0, Qdrant, Neo4j, and Claude — ingests GitHub develop
 ![Neo4j](https://img.shields.io/badge/GraphDB-Neo4j-blue)
 ![Claude](https://img.shields.io/badge/LLM-Claude-orange)
 ![Ollama](https://img.shields.io/badge/Local-Ollama-purple)
+![CI](https://github.com/TanishkaMarrott/mem0-pipeline/actions/workflows/ci.yml/badge.svg)
 
 ---
 
@@ -25,29 +26,34 @@ Unlike plain RAG (retrieve → answer), this pipeline:
 
 ## Architecture
 
-```
-GitHub Events (commits, PRs, issues)
-          │
-          ▼
-┌─────────────────────────────────────────────────────────┐
-│                    mem0 Ingestion Layer                  │
-│                                                          │
-│  Raw text → Ollama LLM → fact extraction                 │
-│                 │                                        │
-│         ┌───────┴────────┐                               │
-│         ▼                ▼                               │
-│     Qdrant           Neo4j                               │
-│  (vector store)    (entity graph)                        │
-│  semantic search   relationship traversal                │
-└──────────────────────────────────────────────────────────┘
-          │                    │
-          └──────────┬─────────┘
-                     ▼
-               Claude (claude-opus-4-6)
-               reasoning over both layers
-                     │
-                     ▼
-            Developer + Cohort Insights
+```mermaid
+flowchart TD
+    GH["GitHub Events\ncommits · PRs · issues"]
+
+    subgraph Ingestion ["mem0 Ingestion Layer"]
+        TXT["Structured sentence\nfact extraction"]
+        OLLAMA["Ollama llama3.1:8b\nLocal LLM"]
+        TXT --> OLLAMA
+    end
+
+    subgraph Storage ["Dual Storage"]
+        QD["Qdrant\nVector Store\nsemantic search"]
+        NEO["Neo4j\nEntity Graph\nrelationship traversal"]
+    end
+
+    subgraph Reasoning ["Insight Generation"]
+        SEARCH["memory.search()\n+ Neo4j queries"]
+        CLAUDE["Claude claude-opus-4-6\nReasoning over both layers"]
+        SEARCH --> CLAUDE
+    end
+
+    OUT["Developer Insights\n+ Cohort Analysis"]
+
+    GH --> Ingestion
+    OLLAMA -->|vector embeddings| QD
+    OLLAMA -->|entities + relationships| NEO
+    QD & NEO --> SEARCH
+    CLAUDE --> OUT
 ```
 
 ### Three-Layer Memory
@@ -111,6 +117,23 @@ Claude never calls mem0 directly. The pipeline retrieves facts via `memory.searc
 | Insight LLM | [Claude](https://anthropic.com) (claude-opus-4-6) | Reasoning, insight generation |
 | Data source | GitHub API (PyGithub) | Developer activity events |
 | Schemas | Pydantic v2 | Type-safe data models |
+
+---
+
+## Configuration
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `ANTHROPIC_API_KEY` | Yes | — | Claude API key for insight generation |
+| `DEMO_MODE` | No | `true` | Use mock GitHub events — no GitHub token needed |
+| `GITHUB_TOKEN` | If DEMO_MODE=false | — | GitHub personal access token |
+| `GITHUB_REPO` | If DEMO_MODE=false | — | Target repo (e.g. `org/repo`) |
+| `NEO4J_URI` | No | `bolt://localhost:7687` | Neo4j connection |
+| `NEO4J_USER` | No | `neo4j` | Neo4j username |
+| `NEO4J_PASSWORD` | No | `password` | Neo4j password |
+| `QDRANT_HOST` | No | `localhost` | Qdrant host |
+| `QDRANT_PORT` | No | `6333` | Qdrant port |
+| `OLLAMA_HOST` | No | `http://localhost:11434` | Ollama endpoint |
 
 ---
 
