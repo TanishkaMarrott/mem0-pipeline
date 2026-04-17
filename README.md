@@ -1,208 +1,174 @@
-# Learner Intelligence Pipeline
+# mem0 Pipeline
 
-A behavioural memory and cohort intelligence system that analyses learner activity signals from AWS lab environments, builds a persistent entity graph, and generates cohort-level insights using LLM reasoning.
+Memory pipeline using mem0, Qdrant, Neo4j, and Claude — ingests GitHub developer activity, builds an entity knowledge graph, and generates developer insights.
 
-> Built as part of my engineering role at KodeKloud. Full implementation is proprietary — this repository documents the architecture, memory design, and pipeline decisions.
-
----
-
-## Overview
-
-The learner intelligence pipeline sits inside a larger [AI Sentinel Ecosystem](https://github.com/TanishkaMarrott/ai-sentinel-ecosystem). Its job is to turn raw learner activity data (lab assignments, durations, completion patterns, retry behaviour) into structured behavioural memory — and then reason over that memory to surface cohort-level insights.
-
-The system uses **mem0 OSS** as the memory layer, backed by:
-- **Qdrant** — vector store for semantic similarity search over learner memories
-- **Neo4j** — entity graph for relationship modelling (learner → lab type → AWS service)
-- **Ollama** — local LLM and embedding model (no external API dependency for memory ops)
-
-Insight generation is handled by **Claude** via the Claude Code Agent SDK.
+![Python](https://img.shields.io/badge/Python-3.12-blue)
+![mem0](https://img.shields.io/badge/Memory-mem0-green)
+![Qdrant](https://img.shields.io/badge/VectorDB-Qdrant-red)
+![Neo4j](https://img.shields.io/badge/GraphDB-Neo4j-blue)
+![Claude](https://img.shields.io/badge/LLM-Claude-orange)
+![Ollama](https://img.shields.io/badge/Local-Ollama-purple)
 
 ---
 
-## System Architecture
+## What This Is
 
-```mermaid
-graph TD
-    subgraph Input
-        LA[Learner Activity\nMongoDB records]
-        CS[Cohort Signals\nlab assignments + durations]
-    end
+A production-style memory pipeline that turns raw GitHub activity into a structured, queryable knowledge graph — and uses Claude to reason over it.
 
-    subgraph Memory Pipeline
-        CH[Chunker\nStructured text chunks\nper learner per session]
-        MEM[mem0 OSS\nmemory.add]
-        QD[(Qdrant\nVector Store)]
-        NEO[(Neo4j\nEntity Graph)]
-        OL[Ollama\nEmbeddings + Entity Extraction]
-    end
-
-    subgraph Insight Generation
-        RET[Retrieval\nmemory.search]
-        CL[Claude\nCohort Analyst Agent]
-        INS[Insight Output\nper cohort]
-    end
-
-    LA --> CH
-    CS --> CH
-    CH --> MEM
-    MEM --> OL
-    OL --> QD
-    OL --> NEO
-
-    RET --> QD
-    RET --> NEO
-    RET --> CL
-    CL --> INS
-```
+Unlike plain RAG (retrieve → answer), this pipeline:
+- **Extracts structured facts** from raw event text via mem0
+- **Stores vector embeddings** in Qdrant for semantic search
+- **Builds an entity graph** in Neo4j (developer → PR → repository relationships)
+- **Reasons across both layers** using Claude for deep insights
 
 ---
 
-## Memory Design
-
-### What gets stored
-
-Each memory chunk is a structured natural-language sentence derived from learner activity:
+## Architecture
 
 ```
-alice@test.com completed AWS_EC2 in 45 minutes — faster than cohort average (62 min).
-alice@test.com attempted iam:AttachRolePolicy 6 times before success — retry pattern detected.
-alice@test.com has completed 4 of 7 assigned labs. Remaining: AWS_S3, AWS_Lambda, AWS_RDS.
+GitHub Events (commits, PRs, issues)
+          │
+          ▼
+┌─────────────────────────────────────────────────────────┐
+│                    mem0 Ingestion Layer                  │
+│                                                          │
+│  Raw text → Ollama LLM → fact extraction                 │
+│                 │                                        │
+│         ┌───────┴────────┐                               │
+│         ▼                ▼                               │
+│     Qdrant           Neo4j                               │
+│  (vector store)    (entity graph)                        │
+│  semantic search   relationship traversal                │
+└──────────────────────────────────────────────────────────┘
+          │                    │
+          └──────────┬─────────┘
+                     ▼
+               Claude (claude-opus-4-6)
+               reasoning over both layers
+                     │
+                     ▼
+            Developer + Cohort Insights
 ```
 
-**Design rationale:** Structured sentences (not raw JSON) give the LLM the best signal for both embedding (semantic search) and entity extraction (graph). Free-form text produces better retrieval than key-value pairs because it preserves context.
+### Three-Layer Memory
 
-### Chunking strategy
+| Layer | Technology | Best for |
+|---|---|---|
+| **Vector store** | Qdrant | "What does Alice work on?" — semantic similarity |
+| **Entity graph** | Neo4j | "Who collaborates with Alice?" — relationship traversal |
+| **Fact extraction** | mem0 + Ollama | Turning raw event text into structured memories |
 
-Activity records are chunked into 4 categories per session:
-1. **Completion chunk** — lab name, duration, relative performance vs cohort
-2. **Behaviour chunk** — retry counts, stuck indicators, API action patterns
-3. **Progress chunk** — overall lab completion rate, remaining labs
-4. **Cohort context chunk** — where this learner sits relative to peers
+### Why Three Layers Beat Plain RAG
 
-Each chunk is stored as a separate `memory.add()` call so retrieval can surface the most relevant slice without loading an entire session history.
+Plain RAG stores raw text and retrieves by similarity. This pipeline stores **structured facts** and retrieves by both **semantic similarity** (Qdrant) and **graph relationships** (Neo4j).
+
+Example: "Who has the most context on the auth-service?"
+- RAG: Returns documents mentioning auth-service
+- This pipeline: Traverses Neo4j → finds alice (8 commits) + carol (TLS rotation) → cross-references Qdrant for context depth → Claude synthesises a specific answer
 
 ---
 
-## Entity Graph Design
+## Key Engineering Decisions
 
-The Neo4j graph models three entity types and their relationships:
+**1. Structured sentences over raw JSON for mem0 ingestion**
+
+Structured natural-language sentences give the LLM better signal for both embedding and entity extraction than raw key-value data:
 
 ```
-(alice@test.com) --[COMPLETED]--> (AWS_EC2)
-(alice@test.com) --[STRUGGLED_WITH]--> (iam:AttachRolePolicy)
-(alice@test.com) --[AHEAD_OF_COHORT_IN]--> (AWS_EC2)
-(bob@test.com)   --[COMPLETED]--> (AWS_EC2)
-(bob@test.com)   --[BEHIND_COHORT_IN]--> (AWS_S3)
-(AWS_EC2)        --[INVOLVES]--> (ec2:RunInstances)
+# Good — preserves context, extracts cleanly
+"alice merged PR #45 which refactored the auth module on 2026-04-11"
+
+# Bad — LLM produces noisy, low-quality entities
+{"author": "alice", "pr": 45, "repo": "auth-service"}
 ```
 
-**Entity extraction prompt design:**
+**2. Scoped entity extraction prompt**
 
-The default mem0 entity extractor produces garbage nodes — abstract concepts like `retry_loop`, `off_cohort_path`, `6.7x`, states like `stuck`. These pollute the graph and break relationship queries.
-
-The fix is a tightly scoped `custom_prompt` that explicitly constrains what counts as an entity:
+The default mem0 extractor produces garbage nodes — abstract states like `retry_loop`, `off_path`, numeric ratios. A tightly scoped custom prompt constraining *what counts as an entity* reduced graph noise by ~80%:
 
 ```python
 custom_prompt = (
-    "Only extract entities that are: "
-    "(1) a specific learner — the entity name MUST be the exact user_id string "
-    "(e.g. alice@test.com). Do NOT prepend 'user_id:', 'user:', or any prefix. "
-    "(2) a specific AWS lab type exactly as written (e.g. AWS_EC2, AWS_S3), "
-    "(3) a specific AWS service or API action (e.g. iam:AttachRolePolicy, ec2:RunInstances). "
-    "Do NOT extract states, ratios, abstract concepts, or generic words as entities."
+    "Only extract entities that are: a specific person (exact username), "
+    "a specific repository name, or a specific technical component. "
+    "Do NOT extract states, ratios, abstract concepts, or generic words."
 )
 ```
 
-This reduced graph noise by ~80% and made relationship queries reliable.
+**3. Separation of retrieval and reasoning**
 
----
-
-## mem0 OSS Stack
-
-| Component | Role | Config |
-|-----------|------|--------|
-| Qdrant | Vector similarity search over learner memories | Local instance, cosine similarity |
-| Neo4j | Entity relationship graph | Local instance, custom extraction prompt |
-| Ollama | Embeddings + entity extraction LLM | `nomic-embed-text` for embeddings, `llama3` for extraction |
-| Claude | Cohort insight generation | Claude Code Agent SDK, `claude-sonnet` model |
-
-**Why OSS instead of mem0 Cloud?**
-- No external API dependency for memory operations — embeddings and extraction run locally
-- Full control over entity extraction behaviour (custom prompts, graph schema)
-- Qdrant and Neo4j can be inspected directly for debugging
-- Zero per-call cost for memory operations
-
----
-
-## Insight Generation
-
-Claude retrieves memories for a cohort using `memory.search()` and reasons over them to generate insights:
-
-**Example output:**
-```
-Cohort: batch-2026-Q1
-
-Patterns observed:
-- 3 of 6 learners show retry patterns on iam:AttachRolePolicy — suggest adding a
-  guided hint at the IAM permissions step
-- alice@test.com and carol@test.com are tracking 40% ahead of cohort average
-  across all labs — candidates for advanced lab assignments
-- 2 learners (bob@test.com, dave@test.com) have not started AWS_Lambda after
-  completing AWS_EC2 — potential drop-off point, worth a nudge
-```
-
-The agent does not have access to raw database records — it only sees what has been stored in memory. This keeps the context clean and ensures insights are derived from the distilled behavioural signal, not raw noise.
-
----
-
-## Integration
-
-The pipeline runs as a Dockerised worker alongside the other sentinel agents:
-
-```
-FastAPI backend (MongoDB)
-    └── /api/aws/sentinels/learner-intelligence/trigger
-            └── li_runner.py (worker)
-                    ├── Chunker → mem0.add() [Qdrant + Neo4j + Ollama]
-                    └── Claude Agent → memory.search() → cohort insights
-```
-
-Parallel session support: up to 2 learner sessions processed concurrently via a semaphore-gated thread pool. Each session is tracked in MongoDB (`is_runs` collection) with status, kill signal support, and completion timestamps.
-
----
-
-## Key Engineering Challenges
-
-**1. KeyError in mem0 graph_memory.py**
-mem0's entity extraction occasionally returns malformed dicts (missing `source`, `destination`, or `relationship` keys) when the LLM output doesn't conform to the expected schema. This killed the entire `memory.add()` call — including the Qdrant write.
-
-Fix: patched 4 locations in `graph_memory.py` to skip malformed entity dicts gracefully. Applied as a post-install patch in the Docker build step.
-
-**2. In-memory lock leak on agent kill**
-When a running agent was killed via the API, the MongoDB record was updated but the in-memory semaphore and running-accounts set were not released. This caused all subsequent triggers to be rejected with "already processing in another worker."
-
-Fix: `kill_agent` now explicitly releases the semaphore slot and discards the account from the in-memory running set before returning.
-
-**3. LLM entity naming inconsistency**
-Neo4j nodes for the same learner were created with different names (`alice@test.com` vs `user_id:alice@test.com` vs `user:alice`) depending on LLM output variability. This fragmented the graph.
-
-Fix: explicit "Do NOT prepend any prefix" instruction in the custom entity extraction prompt, plus a one-time graph cleanup pass to merge duplicate nodes.
+Claude never calls mem0 directly. The pipeline retrieves facts via `memory.search()` and graph data via Neo4j queries, then passes both to Claude as context. This keeps retrieval deterministic and reasoning in Claude.
 
 ---
 
 ## Tech Stack
 
-| Layer | Technology |
-|-------|-----------|
-| Agent framework | Claude Code Agent SDK |
-| Memory layer | mem0 OSS 1.0.7 |
-| Vector store | Qdrant |
-| Entity graph | Neo4j |
-| Local LLM / embeddings | Ollama (llama3 + nomic-embed-text) |
-| Insight generation | Claude (claude-sonnet) |
-| Backend | FastAPI + MongoDB |
-| Infrastructure | Docker + GitLab CI/CD |
+| Component | Technology | Purpose |
+|---|---|---|
+| Memory system | [mem0](https://mem0.ai) | Fact extraction + memory management |
+| Vector store | [Qdrant](https://qdrant.tech) | Semantic search over facts |
+| Knowledge graph | [Neo4j](https://neo4j.com) | Entity relationships |
+| Local LLM | [Ollama](https://ollama.ai) (llama3.1:8b) | Fact extraction, embeddings |
+| Insight LLM | [Claude](https://anthropic.com) (claude-opus-4-6) | Reasoning, insight generation |
+| Data source | GitHub API (PyGithub) | Developer activity events |
+| Schemas | Pydantic v2 | Type-safe data models |
 
 ---
 
-*Architecture and design by Tanishka Marrott. Implementation is proprietary to KodeKloud.*
+## Quick Start
+
+### 1. Start infrastructure
+
+```bash
+cp .env.example .env
+# Fill in ANTHROPIC_API_KEY
+# Leave DEMO_MODE=true to run without GitHub credentials
+
+docker compose up -d
+# First run pulls Ollama models — takes ~5 mins
+```
+
+### 2. Install + run
+
+```bash
+pip install -r requirements.txt
+python main.py
+```
+
+### 3. Explore
+
+| UI | URL |
+|---|---|
+| Qdrant Dashboard | http://localhost:6333/dashboard |
+| Neo4j Browser | http://localhost:7474 |
+
+---
+
+## Project Structure
+
+```
+mem0-pipeline/
+├── pipeline/
+│   ├── memory_store.py       # mem0 — Qdrant + Neo4j + Ollama config
+│   ├── ingestion.py          # GitHub events → mem0 add()
+│   └── insight_generator.py  # mem0 search() + Neo4j → Claude
+├── graph/
+│   └── neo4j_client.py       # Knowledge graph queries
+├── models/
+│   └── schemas.py            # Pydantic schemas
+├── demo/
+│   └── mock_github_events.json
+├── main.py
+└── docker-compose.yml
+```
+
+---
+
+## Related
+
+[dual-agent-memory](https://github.com/TanishkaMarrott/dual-agent-memory) — Two Claude agents with shared Hindsight memory bank (different memory architecture, same author)
+
+---
+
+## Author
+
+Built by [Tanishka Marrott](https://github.com/TanishkaMarrott) — AI Agent Systems Engineer
