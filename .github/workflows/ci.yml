@@ -38,8 +38,8 @@ jobs:
           python-version: "3.11"
           cache: "pip"
 
-      - name: Install pydantic only (no infra needed for schema validation)
-        run: pip install pydantic python-dotenv
+      - name: Install dependencies
+        run: pip install -r requirements.txt
 
-      - name: Validate Pydantic schemas import cleanly
-        run: python -c "from models.schemas import GitHubEvent, DeveloperInsight; print('Schemas OK')"
+      - name: Run tests
+        run: pytest tests/ -v --tb=short
