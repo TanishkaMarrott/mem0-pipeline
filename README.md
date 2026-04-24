@@ -9,6 +9,8 @@ Memory pipeline using mem0, Qdrant, Neo4j, and Claude — ingests GitHub develop
 ![Claude](https://img.shields.io/badge/LLM-Claude-orange)
 ![Ollama](https://img.shields.io/badge/Local-Ollama-purple)
 ![CI](https://github.com/TanishkaMarrott/mem0-pipeline/actions/workflows/ci.yml/badge.svg)
+![Tests](https://img.shields.io/badge/Tests-23%20passing-brightgreen)
+![Coverage](https://img.shields.io/badge/Coverage-schema%20layer%20100%25-brightgreen)
 
 ---
 
