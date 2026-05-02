@@ -13,7 +13,7 @@ Memory pipeline using mem0, Qdrant, Neo4j, and Claude — ingests GitHub develop
 ![Coverage](https://img.shields.io/badge/Coverage-schema%20layer%20100%25-brightgreen)
 
 
-> *Personal portfolio project, built and iterated Mar–Apr 2026.*
+> *Portfolio extraction of KodeKloud POC work, Mar–Apr 2026. Commit timeline reflects the original development.*
 
 ---
 
